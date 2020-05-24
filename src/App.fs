@@ -11,12 +11,20 @@ type TodoCompleted =
     | TodoCompleted
     | TodoPending
 
+type EditStatus =
+    | PendingEditing
+    | Edited
+
 type Todo =
     { Description: string
       Completed: TodoCompleted
       Id: Guid }
 
-type TodoBeingEdited = { Id: Guid; Description: string }
+type TodoBeingEdited =
+    { Id: Guid
+      Description: string
+      OriginalText: string
+      EditStatus: EditStatus }
 
 // Type to model current state of the completion status filter
 type CompletionStatusFilterTab =
@@ -128,7 +136,26 @@ let update (msg: Msg) (state: State): State =
             |> List.tryFind (fun todo -> todo.Id = todoId)
             |> Option.map (fun todo ->
                 { Id = todoId
-                  Description = todo.Description })
+                  Description = todo.Description
+                  OriginalText = todo.Description
+                  EditStatus = PendingEditing })
+
+        { state with
+              TodoBeingEdited = nextEditModel }
+
+    | SetEditedDescription newText ->
+        let nextEditModel =
+            state.TodoBeingEdited
+            |> Option.map (fun todoBeingEdited ->
+                if ((todoBeingEdited.Description <> newText)
+                    && (todoBeingEdited.OriginalText <> newText)) then
+                    { todoBeingEdited with
+                          Description = newText
+                          EditStatus = Edited }
+                else
+                    { todoBeingEdited with
+                          Description = newText
+                          EditStatus = PendingEditing })
 
         { state with
               TodoBeingEdited = nextEditModel }
@@ -155,16 +182,6 @@ let update (msg: Msg) (state: State): State =
             { state with
                   TodoList = nextTodoList
                   PersistedTodoList = nextPersistedTodoList }
-
-    | SetEditedDescription newText ->
-        let nextEditModel =
-            state.TodoBeingEdited
-            |> Option.map (fun todoBeingEdited ->
-                { todoBeingEdited with
-                      Description = newText })
-
-        { state with
-              TodoBeingEdited = nextEditModel }
 
     | ChangeFilterTab newFilter ->
         match newFilter with
@@ -280,7 +297,9 @@ let renderEditForm (todoBeingEdited: TodoBeingEdited) (dispatch: Msg -> unit) =
 
                 div [ Blm.Control; Blm.Buttons ]
                     [ Html.button
-                        [ prop.classes [ Blm.Button; Blm.IsPrimary ]
+                        [ prop.classes
+                            [ Blm.Button
+                              if todoBeingEdited.EditStatus = Edited then Blm.IsPrimary else Blm.IsOutlined ]
                           prop.onClick (fun _ -> dispatch ApplyEdit)
                           prop.children [ Html.i [ prop.classes [ FA.Fa; FA.FaSave ] ] ] ]
 
