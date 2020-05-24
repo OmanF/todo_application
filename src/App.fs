@@ -181,7 +181,8 @@ let update (msg: Msg) (state: State): State =
 
             { state with
                   TodoList = nextTodoList
-                  PersistedTodoList = nextPersistedTodoList }
+                  PersistedTodoList = nextPersistedTodoList
+                  TodoBeingEdited = None }
 
     | ChangeFilterTab newFilter ->
         match newFilter with
