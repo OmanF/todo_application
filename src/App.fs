@@ -12,19 +12,17 @@ type TodoCompleted =
     | TodoPending
 
 type EditStatus =
-    | PendingEditing
+    | Initialized
+    | StartedEditing
+    | ActiveEditing
     | Edited
 
 type Todo =
-    { Description: string
-      Completed: TodoCompleted
-      Id: Guid }
-
-type TodoBeingEdited =
     { Id: Guid
-      Description: string
+      CurrentText: string
       OriginalText: string
-      EditStatus: EditStatus }
+      EditStatus: EditStatus
+      Completed: TodoCompleted }
 
 // Type to model current state of the completion status filter
 type CompletionStatusFilterTab =
@@ -34,10 +32,9 @@ type CompletionStatusFilterTab =
 
 // Model
 type State =
-    { TodoBeingEdited: TodoBeingEdited option
+    { NewTodo: string
       TodoList: Todo list
       PersistedTodoList: Todo list // `TodoList` changes based on the view. This holds the *complete* state
-      NewTodo: string
       SelectedFilterTabGUI: CompletionStatusFilterTab }
 
 type Msg =
@@ -45,23 +42,23 @@ type Msg =
     | AddNewTodo
     | ToggleCompleted of Guid
     | DeleteTodo of Guid
-    | CancelEdit
-    | ApplyEdit
+    | CancelEdit of Guid
+    | ApplyEdit of Guid
     | StartEditingTodo of Guid
-    | SetEditedDescription of string
+    | SetEditedDescription of string * Guid
     | ChangeFilterTab of CompletionStatusFilterTab
 
 let init () =
-    { TodoList = []
+    { NewTodo = ""
+      TodoList = []
       PersistedTodoList = []
-      NewTodo = ""
-      TodoBeingEdited = None
       SelectedFilterTabGUI = All }
 
 // Update
 let update (msg: Msg) (state: State): State =
     match msg with
     | SetNewTodo desc -> { state with NewTodo = desc }
+
     | ToggleCompleted todoId ->
         // I've used this method throughout the code to update both lists with one go
         // It's sub-optimal, being a non-exhaustive match, but it's the fastest way to destructure
@@ -102,7 +99,9 @@ let update (msg: Msg) (state: State): State =
     | AddNewTodo ->
         let nextTodo =
             { Id = Guid.NewGuid()
-              Description = state.NewTodo
+              CurrentText = state.NewTodo
+              OriginalText = state.NewTodo
+              EditStatus = Initialized
               Completed = TodoPending }
 
         { state with
@@ -131,58 +130,62 @@ let update (msg: Msg) (state: State): State =
               PersistedTodoList = nextPersistedTodoList }
 
     | StartEditingTodo todoId ->
-        let nextEditModel =
+        let transformIntoEditable todo =
+            { todo with
+                  EditStatus = StartedEditing }
+
+        { state with
+              TodoList =
+                  List.map (fun todo -> if todo.Id = todoId then transformIntoEditable todo else todo) state.TodoList }
+
+    | SetEditedDescription (newText, todoId) ->
+        let nextTodoList =
             state.TodoList
-            |> List.tryFind (fun todo -> todo.Id = todoId)
-            |> Option.map (fun todo ->
-                { Id = todoId
-                  Description = todo.Description
-                  OriginalText = todo.Description
-                  EditStatus = PendingEditing })
-
-        { state with
-              TodoBeingEdited = nextEditModel }
-
-    | SetEditedDescription newText ->
-        let nextEditModel =
-            state.TodoBeingEdited
-            |> Option.map (fun todoBeingEdited ->
-                if ((todoBeingEdited.Description <> newText)
-                    && (todoBeingEdited.OriginalText <> newText)) then
-                    { todoBeingEdited with
-                          Description = newText
-                          EditStatus = Edited }
+            |> List.map (fun currentTodo ->
+                if currentTodo.Id = todoId then
+                    if currentTodo.OriginalText <> newText then
+                        { currentTodo with
+                              EditStatus = ActiveEditing
+                              CurrentText = newText }
+                    else
+                        { currentTodo with
+                              EditStatus = StartedEditing }
                 else
-                    { todoBeingEdited with
-                          Description = newText
-                          EditStatus = PendingEditing })
+                    currentTodo)
 
-        { state with
-              TodoBeingEdited = nextEditModel }
+        { state with TodoList = nextTodoList }
 
-    | CancelEdit -> { state with TodoBeingEdited = None }
+    | ApplyEdit todoId ->
+        let nextTodoList =
+            state.TodoList
+            |> List.map (fun todo ->
+                if todo.Id = todoId then
+                    match todo.CurrentText with
+                    | "" ->
+                        { todo with
+                              CurrentText = todo.OriginalText
+                              EditStatus = Initialized }
+                    | _ ->
+                        { todo with
+                              EditStatus = Edited
+                              OriginalText = todo.CurrentText }
+                else
+                    todo)
 
-    | ApplyEdit ->
-        match state.TodoBeingEdited with
-        | None -> state
-        | Some todoBeingEdited when todoBeingEdited.Description = "" -> state
-        | Some todoBeingEdited ->
-            let [ nextTodoList; nextPersistedTodoList ] =
-                [ state.TodoList
-                  state.PersistedTodoList ]
-                |> List.map (fun currentTodoList ->
-                    currentTodoList
-                    |> List.map (fun todo ->
-                        if todo.Id = todoBeingEdited.Id then
-                            { todo with
-                                  Description = todoBeingEdited.Description }
-                        else
-                            todo))
+        { state with TodoList = nextTodoList }
 
-            { state with
-                  TodoList = nextTodoList
-                  PersistedTodoList = nextPersistedTodoList
-                  TodoBeingEdited = None }
+    | CancelEdit todoId ->
+        let nextTodoList =
+            state.TodoList
+            |> List.map (fun todo ->
+                if todo.Id = todoId then
+                    { todo with
+                          EditStatus = Initialized
+                          CurrentText = todo.OriginalText }
+                else
+                    todo)
+
+        { state with TodoList = nextTodoList }
 
     | ChangeFilterTab newFilter ->
         match newFilter with
@@ -266,7 +269,7 @@ let renderTodo (todo: Todo) (dispatch: Msg -> unit) =
               [ div [ Blm.Column; Blm.Subtitle ]
                     [ Html.p
                         [ prop.className Blm.Subtitle
-                          prop.text todo.Description ] ]
+                          prop.text todo.CurrentText ] ]
 
                 div [ Blm.Column; Blm.IsNarrow ]
                     [ div [ Blm.Buttons ]
@@ -287,35 +290,37 @@ let renderTodo (todo: Todo) (dispatch: Msg -> unit) =
                                   prop.onClick (fun _ -> dispatch (DeleteTodo todo.Id))
                                   prop.children [ Html.i [ prop.classes [ FA.Fa; FA.FaTimes ] ] ] ] ] ] ] ]
 
-let renderEditForm (todoBeingEdited: TodoBeingEdited) (dispatch: Msg -> unit) =
+let renderEditForm (todo: Todo) (dispatch: Msg -> unit) =
     div [ Blm.Box ]
         [ div [ Blm.Field; Blm.IsGrouped ]
               [ div [ Blm.Control; Blm.IsExpanded ]
                     [ Html.input
                         [ prop.classes [ Blm.Input; Blm.IsMedium ]
-                          prop.valueOrDefault todoBeingEdited.Description
-                          prop.onTextChange (SetEditedDescription >> dispatch) ] ]
+                          prop.defaultValue todo.CurrentText
+                          prop.onTextChange (fun newText -> dispatch (SetEditedDescription(newText, todo.Id))) ] ]
 
                 div [ Blm.Control; Blm.Buttons ]
                     [ Html.button
                         [ prop.classes
                             [ Blm.Button
-                              if todoBeingEdited.EditStatus = Edited then Blm.IsPrimary else Blm.IsOutlined ]
-                          prop.onClick (fun _ -> dispatch ApplyEdit)
+                              if todo.EditStatus = ActiveEditing then Blm.IsPrimary else Blm.IsOutlined ]
+                          prop.onClick (fun _ -> dispatch (ApplyEdit todo.Id))
                           prop.children [ Html.i [ prop.classes [ FA.Fa; FA.FaSave ] ] ] ]
 
                       Html.button
                           [ prop.classes [ Blm.Button; Blm.IsWarning ]
-                            prop.onClick (fun _ -> dispatch CancelEdit)
+                            prop.onClick (fun _ -> dispatch (CancelEdit todo.Id))
                             prop.children [ Html.i [ prop.classes [ FA.Fa; FA.FaArrowRight ] ] ] ] ] ] ]
 
 let todoList state dispatch =
     Html.ul
         [ prop.children
             [ for todo in state.TodoList ->
-                match state.TodoBeingEdited with
-                | Some todoBeingEdited when todoBeingEdited.Id = todo.Id -> renderEditForm todoBeingEdited dispatch
-                | _ -> renderTodo todo dispatch ] ]
+                if (todo.EditStatus = StartedEditing
+                    || todo.EditStatus = ActiveEditing) then
+                    renderEditForm todo dispatch
+                else
+                    renderTodo todo dispatch ] ]
 
 let render (state: State) (dispatch: Msg -> unit) =
     Html.div  // Can't be shortcut-ed via the `div` function above because it has style and no classes!
