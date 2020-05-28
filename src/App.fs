@@ -1,13 +1,14 @@
 module App
 
-// Imports
+// Imports //
 open System
 open Elmish
 open Elmish.React
 open Feliz
 
-// Model types
+// Model types //
 type TodoCompleted =
+    // Using explicit type with well defined names feels more correct than a bool.
     | TodoCompleted
     | TodoPending
 
@@ -24,17 +25,16 @@ type Todo =
       EditStatus: EditStatus
       Completed: TodoCompleted }
 
-// Type to model current state of the completion status filter
 type CompletionStatusFilterTab =
     | All
     | Completed
     | Pending
 
-// Model
+// Model //
 type State =
     { NewTodo: string
       TodoList: Todo list
-      PersistedTodoList: Todo list // `TodoList` changes based on the view. This holds the *complete* state
+      PersistedTodoList: Todo list // `TodoList` changes based on the view. This holds the *complete* state.
       SelectedFilterTabGUI: CompletionStatusFilterTab }
 
 type Msg =
@@ -48,53 +48,27 @@ type Msg =
     | SetEditedDescription of string * Guid
     | ChangeFilterTab of CompletionStatusFilterTab
 
+// Update //
 let init () =
     { NewTodo = ""
       TodoList = []
       PersistedTodoList = []
       SelectedFilterTabGUI = All }
 
-// Update
 let update (msg: Msg) (state: State): State =
     match msg with
+    (*
+     * When we enter new input to the input field, change the current "candidate"'s text to reflect what the user is seeing.
+     * We only change the temporary list, `state.TodoList` since this *is* a visual change only. No actual todo's state is being changed.
+     *)
     | SetNewTodo desc -> { state with NewTodo = desc }
 
-    | ToggleCompleted todoId ->
-        // I've used this method throughout the code to update both lists with one go
-        // It's sub-optimal, being a non-exhaustive match, but it's the fastest way to destructure
-        // the list-of-lists data structure, and since I'm defining the list-of-lists in the first
-        // place, I'm guaranteed it's an exhaustive match
-        let [ nextTodoList; nextPersistedTodoList ] =
-            [ state.TodoList
-              state.PersistedTodoList ]
-            |> List.map (fun currentTodoList ->
-                currentTodoList
-                |> List.map (fun todo ->
-                    if todo.Id = todoId then // Traverse the todo list to find the one that has been clicked
-                        if todo.Completed = TodoCompleted then // Toggle its state
-                            { todo with Completed = TodoPending }
-                        else
-                            { todo with Completed = TodoCompleted }
-                    else // That's not the right todo
-                        todo))
-
-        { state with
-              TodoList =
-                  match state.SelectedFilterTabGUI with
-                  // This function gets called when the `Completed` button gets toggled
-                  // Since the button can be clicked when the filter is not necessarily `All`,
-                  // it's this function responsibility to compute the todo's new state and only display
-                  // it if the new state conforms with the filter's state
-                  | All -> nextPersistedTodoList // `All` is the *complete* state, i.e. the persisted list
-                  | Pending ->
-                      nextTodoList
-                      |> List.filter (fun todo -> todo.Completed = TodoPending)
-                  | Completed ->
-                      nextTodoList
-                      |> List.filter (fun todo -> todo.Completed = TodoCompleted)
-
-              PersistedTodoList = nextPersistedTodoList }
-
+    (*
+     * For adding a new todo, if the text in the input field is the empty string, there's nothing to actually add, so return the state as it is.
+     * Otherwise, we add the new todo to the persisted list, no matter what (obviously), but we only put in on the displayed list, `state.TodoList`
+     * if the status tab is not `Completed`, since any new todo is, by definition, not completed (again, luckily, the other tabs are `All` and `Pending`
+     * and a new, pending, todo fits both these filters).
+     *)
     | AddNewTodo when state.NewTodo = "" -> state
     | AddNewTodo ->
         let nextTodo =
@@ -107,28 +81,86 @@ let update (msg: Msg) (state: State): State =
         { state with
               NewTodo = ""
               TodoList =
-                  // Only add to the tentative list, the one whose content is displayed on screen, if the filter
-                  // is *not* set to `Completed`, since any new todo added, by definition is not completed
                   if state.SelectedFilterTabGUI <> Completed then
                       List.append state.TodoList [ nextTodo ]
                   else
                       state.TodoList
-              // You *always* amend the *persisted* list, no matter what
               PersistedTodoList = List.append state.PersistedTodoList [ nextTodo ] }
 
+    | ToggleCompleted todoId ->
+        (*
+         * I've used this method throughout the code to update both lists with one go.
+        * It's sub-optimal, being a non-exhaustive match, but it's the fastest way to destructure
+        * the list-of-lists data structure, and since I'm defining the list-of-lists in the first
+        * place, I'm guaranteed it's an exhaustive match.
+
+        * Per each list, iterate through the items (the todos), until finding the item whose ID matches the one that triggered the call.
+        * Once found, toggle it's state (luckily, this is a binary toggle so the code is of form "If state A, switch to B, if state B, switch to A".
+
+        * We toggle update both lists, including the persisted one, since this effects the todo's state, it is more than just a visual cue for the user (that also happens, but is only half of what's *actually* happening).
+        *)
+
+        let [ nextTodoList; nextPersistedTodoList ] =
+            [ state.TodoList
+              state.PersistedTodoList ]
+            |> List.map (fun currentTodoList ->
+                currentTodoList
+                |> List.map (fun todo ->
+                    if todo.Id = todoId then
+                        if todo.Completed = TodoCompleted then
+                            { todo with Completed = TodoPending }
+                        else
+                            { todo with Completed = TodoCompleted }
+                    else
+                        todo))
+
+        { state with
+              TodoList =
+                  match state.SelectedFilterTabGUI with
+                  (*
+                   * This function, `ToggleCompleted` gets called when the `Completed` button gets toggled.
+                   * Since the button can be clicked when the filter is not necessarily `All`,
+                   * it's this function responsibility to compute the todo's new state and only display
+                   * it if the new state conforms with the current filter's state.
+                   *)
+                  | All -> nextPersistedTodoList // `All` is the *complete* state, i.e. the persisted list
+                  | Pending ->
+                      nextTodoList
+                      |> List.filter (fun todo -> todo.Completed = TodoPending)
+                  | Completed ->
+                      nextTodoList
+                      |> List.filter (fun todo -> todo.Completed = TodoCompleted)
+
+              PersistedTodoList = nextPersistedTodoList }
+
+    (*
+     * In order to delete a specific todo we comb the list of todos for the todo with the matching ID, and we filter it out
+     * (or, more accurately, we filter, and keep, all others).
+     * Again, both current *and* persisted lists are updated since we change a todo's state, in this particular case, making its state non-existent anymore, but still, a state change).
+     *)
     | DeleteTodo todoId ->
         let [ nextTodoList; nextPersistedTodoList ] =
             [ state.TodoList
               state.PersistedTodoList ]
             |> List.map (fun currentTodoList ->
                 currentTodoList
-                // Only keep the todos that don't match, i.e. "delete" the todo
                 |> List.filter (fun todo -> todo.Id <> todoId))
+
 
         { state with
               TodoList = nextTodoList
               PersistedTodoList = nextPersistedTodoList }
 
+    (*
+     * A simple function to mark a todo as being edited.
+     * Since this implementation takes the path of marking each todo's "editable" state in the todo's state itself (as opposed to keeping a list of editable todos),
+     * I need to mark each todo that I clicked its "Edit" button separately.
+
+     * Scan the temporary list until finding the triggering todo and simply edit its state to show it is now being edited (though the nature of the edition is undetermined at the moment).
+
+     * This only changes the temporary list, `state.TodoList` since, while this is *not* a visual only function, it *does* have some state change to a todo,
+     * the acted upon todo is not final yet, the edition can be cancelled instead of applied, and until a *final* "verdict" is cast, there can be no persisted change!
+     *)
     | StartEditingTodo todoId ->
         let transformIntoEditable todo =
             { todo with
@@ -138,6 +170,10 @@ let update (msg: Msg) (state: State): State =
               TodoList =
                   List.map (fun todo -> if todo.Id = todoId then transformIntoEditable todo else todo) state.TodoList }
 
+    (*
+     * Same as setting the input field, but for each specific, triggering, todo by itself.
+     * As usual, only for the temporary list since this doesn't finalize the todo's state and *might* be considered (if you close one eye and blink hard with the other) a "visual" change.
+     *)
     | SetEditedDescription (newText, todoId) ->
         let nextTodoList =
             state.TodoList
@@ -155,6 +191,18 @@ let update (msg: Msg) (state: State): State =
 
         { state with TodoList = nextTodoList }
 
+    (*
+     * The fun part. Really, "Happy, happy! Joy, joy!" kind of fun.
+     * First, we scan the temporary list and finalize each triggering todo. By "finalize" we also change its `OriginalText` to the `CurrentText`, the text the user sees on screen.
+     * Since we decided to submit the edit, the todo's new "original" text is the current one.
+     * One exception is if the new todo is the empty string where, according to the "specs" we decide that means the user actually made a mistake and wished to cancel the edition
+     * and we revert to its previous state.
+
+     * Once done with the temporary list, we scan the persisted list, one item at a time and compare each persisted item to the displayed items.
+     * If we didn't find a match, that is we are viewing a filtering of the list and the persisted todo doesn't match the filter (a completed todo, when we view the pending list, or vice-versa)
+     * we do nothing (i.e. return the persisted todo as is).
+     * If we found a match we change the persisted todo's state to match the state of the corresponding temporary todo.
+     *)
     | ApplyEdit todoId ->
         let nextTodoList =
             state.TodoList
@@ -172,8 +220,28 @@ let update (msg: Msg) (state: State): State =
                 else
                     todo)
 
-        { state with TodoList = nextTodoList }
+        let nextPersistedTodoList =
+            state.PersistedTodoList
+            |> List.map (fun pTodo ->
+                let matchTodo =
+                    nextTodoList
+                    |> List.tryFind (fun cTodo -> cTodo.Id = pTodo.Id)
 
+                match matchTodo with
+                | None -> pTodo
+                | Some mTodo ->
+                    { pTodo with
+                          EditStatus = Edited
+                          OriginalText = mTodo.OriginalText
+                          CurrentText = mTodo.OriginalText })
+
+        { state with
+              TodoList = nextTodoList
+              PersistedTodoList = nextPersistedTodoList }
+
+    (*
+     * To cancel an edit we simply find the todo triggering the cancellation and revert its state to before the edit button was clicked. Really, that's all.
+     *)
     | CancelEdit todoId ->
         let nextTodoList =
             state.TodoList
@@ -187,6 +255,10 @@ let update (msg: Msg) (state: State): State =
 
         { state with TodoList = nextTodoList }
 
+    (*
+     * When we change the filter tab we go over the *persisted* list and filter to keep all the todos whose completed status matches that of the filter.
+     * This is obviously a change for the temporary list only, since this is a hallmark example of a visual-only, no inherent state change, function.
+     *)
     | ChangeFilterTab newFilter ->
         match newFilter with
         | All ->
@@ -210,7 +282,7 @@ let update (msg: Msg) (state: State): State =
                   TodoList = nextTodo
                   SelectedFilterTabGUI = Pending }
 
-// View
+// View //
 // Helper function to dish-out `div` elements quickly
 let div (classes: string list) (children: Fable.React.ReactElement list) =
     Html.div
@@ -331,7 +403,7 @@ let render (state: State) (dispatch: Msg -> unit) =
                 renderFilterTabs state dispatch
                 todoList state dispatch ] ]
 
-// Run application
+// Run application //
 Program.mkSimple init update render
 |> Program.withReactSynchronous "elmish-app"
 |> Program.run
